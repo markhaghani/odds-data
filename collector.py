@@ -95,13 +95,17 @@ def gate(probs, slots):
     distinct = len(set(round(p, 4) for p in probs.values()))
     if total > slots * 1.6 or distinct <= 4:
         return "untraded", total
+    # a book far below the slot count means teams are missing from the
+    # snapshot; scaling the survivors up paints a fake all-teams spike
+    if total < slots * 0.7:
+        return "partial", total
     if total > slots * 1.25:
         return "wide", total
     return "ok", total
 
 
 def normalize(probs, slots, verdict, total):
-    if verdict == "untraded" or not total:
+    if verdict in ("untraded", "partial") or not total:
         return {t: None for t in probs}
     return {t: round(p * slots / total, 5) for t, p in probs.items()}
 
