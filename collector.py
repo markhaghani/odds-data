@@ -29,6 +29,11 @@ UA = {"User-Agent": "odds-drift-collector/1.0 (github.com/markhaghani/odds-data)
 DB = "data/odds.sqlite"
 EXPORT = "data/epl.json"
 
+# Season rollover (each July): bump SEASON, swap the MARKETS slugs for the new
+# season's events, add promoted teams to CANON. Old rows keep their season tag,
+# so series from different seasons never concatenate into one line.
+SEASON = "2026-27"
+
 # market key -> (polymarket event slug, slots)
 MARKETS = {
     ("EPL", "WINNER"): ("epl-2027-champion-20260701200428749", 1),
@@ -55,6 +60,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS odds_snapshot (
   ts          TEXT NOT NULL,
   source      TEXT NOT NULL,
+  season      TEXT NOT NULL,
   competition TEXT NOT NULL,
   market      TEXT NOT NULL,
   team        TEXT NOT NULL,
@@ -63,7 +69,7 @@ CREATE TABLE IF NOT EXISTS odds_snapshot (
   liquidity   REAL,
   book_sum    REAL NOT NULL,
   quality     TEXT NOT NULL,
-  PRIMARY KEY (ts, source, competition, market, team)
+  PRIMARY KEY (ts, source, season, competition, market, team)
 );
 CREATE INDEX IF NOT EXISTS idx_series
   ON odds_snapshot (competition, market, team, ts);
@@ -114,12 +120,12 @@ def write(db, ts, source, comp, market, probs, liq, slots):
     verdict, total = gate(probs, slots)
     norm = normalize(probs, slots, verdict, total)
     rows = [
-        (ts, source, comp, market, t, probs[t], norm[t], liq.get(t),
+        (ts, source, SEASON, comp, market, t, probs[t], norm[t], liq.get(t),
          round(total, 5), verdict)
         for t in probs
     ]
     db.executemany(
-        "INSERT OR REPLACE INTO odds_snapshot VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
+        "INSERT OR REPLACE INTO odds_snapshot VALUES (?,?,?,?,?,?,?,?,?,?,?)", rows)
     return verdict, total
 
 
@@ -189,28 +195,30 @@ def backfill(db):
 
 
 def export(db):
-    """Compact JSON for the site: daily series full-history plus hourly for
-    the last 14 days, gated rows excluded (they render as gaps)."""
+    """Compact JSON for the site, split by source so the chart can switch
+    between them: daily series full-history plus hourly for the last 14 days,
+    gated rows excluded (they render as gaps)."""
     out = {"generated": datetime.now(timezone.utc).isoformat(
-        timespec="seconds"), "markets": {}}
+        timespec="seconds"), "season": SEASON, "markets": {}}
     for (comp, market), (_, slots) in MARKETS.items():
         rows = db.execute(
-            """SELECT ts, team, norm_prob FROM odds_snapshot
-               WHERE competition=? AND market=? AND source='polymarket'
+            """SELECT source, ts, team, norm_prob FROM odds_snapshot
+               WHERE season=? AND competition=? AND market=?
                  AND norm_prob IS NOT NULL ORDER BY ts""",
-            (comp, market)).fetchall()
-        daily, hourly = {}, {}
+            (SEASON, comp, market)).fetchall()
+        sources = {}
         cutoff = time.time() - 14 * 86400
-        for ts, team, p in rows:
+        for source, ts, team, p in rows:
+            blk = sources.setdefault(source, {"daily": {}, "hourly": {}})
             epoch = datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
-            day = ts[:10]
-            daily.setdefault(team, {})[day] = p       # last write per day wins
+            blk["daily"].setdefault(team, {})[ts[:10]] = p  # last write per day
             if epoch >= cutoff:
-                hourly.setdefault(team, {})[ts] = p
+                blk["hourly"].setdefault(team, {})[ts] = p
         key = f"{comp}_{market}"
-        out["markets"][key] = {"slots": slots, "daily": daily, "hourly": hourly}
-        n = sum(len(v) for v in daily.values())
-        print(f"export {key}: {len(daily)} teams, {n} daily points")
+        out["markets"][key] = {"slots": slots, "sources": sources}
+        for source, blk in sources.items():
+            n = sum(len(v) for v in blk["daily"].values())
+            print(f"export {key}/{source}: {len(blk['daily'])} teams, {n} daily points")
     with open(EXPORT, "w") as f:
         json.dump(out, f, separators=(",", ":"))
     print(f"wrote {EXPORT}")

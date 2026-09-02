@@ -12,3 +12,12 @@ Hourly collector for season-long football odds, feeding the chart at
 
 EFL Championship promotion is planned via a Betfair adapter (Polymarket's
 promotion market is untraded - the book sums to ~11 against a target of 3).
+
+## Season rollover checklist (each July)
+
+1. Bump `SEASON` in `collector.py`.
+2. Replace the `MARKETS` slugs with the new season's Polymarket event slugs
+   (search gamma-api `/public-search` for "EPL champion" etc).
+3. Add promoted teams to `CANON` - the collector fails loudly on unknown names.
+4. Old rows keep their season tag; the export only serves the current season,
+   so series from different seasons never join into one line.
